@@ -5,7 +5,6 @@ import traceback
 import importlib
 import importlib.metadata
 import importlib.util
-import subprocess
 import contextlib
 from pathlib import Path
 
@@ -297,6 +296,10 @@ class ThighUSSegmentationWidget(ScriptedLoadableModuleWidget):
                     "Anatomical points and the central line were not loaded."
                 )
 
+        except DependencySetupCancelled as exc:
+            self.statusLabel.text = "Cancelled."
+            self.appendLog(str(exc))
+
         except Exception:
             self.statusLabel.text = "Error."
 
@@ -313,6 +316,10 @@ class ThighUSSegmentationWidget(ScriptedLoadableModuleWidget):
         finally:
             self.applyButton.setEnabled(True)
             slicer.app.processEvents()
+
+
+class DependencySetupCancelled(RuntimeError):
+    """User declined an optional installation or download."""
 
 
 class SlicerLogWriter:
@@ -342,7 +349,7 @@ class SlicerLogWriter:
 
 class ThighUSSegmentationLogic(ScriptedLoadableModuleLogic):
 
-    PACKAGE_MIN_VERSION = "0.2.7"
+    PACKAGE_MIN_VERSION = "0.2.9"
     PACKAGE_SPEC = f"thigh-us-segmentation>={PACKAGE_MIN_VERSION}"
     PACKAGE_DISTRIBUTION_NAME = "thigh-us-segmentation"
     PACKAGE_IMPORT_NAME = "ThighUSSegmentation"
@@ -496,140 +503,186 @@ class ThighUSSegmentationLogic(ScriptedLoadableModuleLogic):
         for scriptsDir in existingDirs:
             self.log(f"Scripts dir: {scriptsDir}")
 
-    def run_process_and_log(self, cmd):
-        """
-        Ejecuta un proceso externo y muestra stdout/stderr en el log.
-        Se usa para pip install.
-        """
+    @staticmethod
+    def installed_distribution_version(name):
+        try:
+            return importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            return None
 
-        self.log("")
-        self.log("Running command:")
-        self.log(" ".join(str(c) for c in cmd))
-        self.log("")
+    def ensure_compatible_torch(self):
+        """Reuse an existing compatible PyTorch; delegate missing installs to PyTorchUtils."""
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
 
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            universal_newlines=True,
-        )
+        requirement = SpecifierSet(">=2.1.2,!=2.9.*")
+        torch_version = self.installed_distribution_version("torch")
 
-        if process.stdout is not None:
-            for line in process.stdout:
-                self.log(line.rstrip())
+        if torch_version is not None:
+            if Version(torch_version) not in requirement:
+                raise RuntimeError(
+                    f"Installed PyTorch {torch_version} does not satisfy {requirement}.\n"
+                    "ThighUSSegmentation will not replace shared PyTorch automatically. "
+                    "Please resolve the conflict using Slicer's PyTorch Utils module."
+                )
+            try:
+                import torch
+            except Exception as exc:
+                raise RuntimeError(
+                    "PyTorch is installed but cannot be imported. "
+                    "Please repair it using the PyTorch Utils module."
+                ) from exc
+            self.log(f"Reusing existing PyTorch {torch.__version__}.")
+            return
 
-        returnCode = process.wait()
-
-        if returnCode != 0:
+        try:
+            import PyTorchUtils
+        except ImportError as exc:
             raise RuntimeError(
-                "Command failed with return code "
-                f"{returnCode}:\n{' '.join(str(c) for c in cmd)}"
+                "PyTorch is missing, and the Slicer PyTorch extension "
+                "(PyTorchUtils) is not available.\n"
+                "Install the 'PyTorch' extension through Extension Manager, "
+                "restart Slicer, and retry."
+            ) from exc
+
+        self.log("PyTorch is missing; requesting installation via PyTorchUtils.")
+        torch_logic = PyTorchUtils.PyTorchUtilsLogic()
+        torch_module = torch_logic.installTorch(
+            askConfirmation=True,
+            torchVersionRequirement=">=2.1.2,!=2.9.*",
+        )
+        if torch_module is None:
+            raise DependencySetupCancelled("PyTorch installation cancelled.")
+        self.log(f"Installed PyTorch {torch_module.__version__} using PyTorchUtils.")
+
+    def check_opencv_distribution_conflict(self):
+        """Prevent installing two conflicting providers of the cv2 package."""
+        gui_version = self.installed_distribution_version("opencv-python")
+        gui_contrib = self.installed_distribution_version("opencv-contrib-python")
+        headless_version = self.installed_distribution_version("opencv-python-headless")
+        headless_contrib = self.installed_distribution_version("opencv-contrib-python-headless")
+
+        conflicts = [
+            f"opencv-python {gui_version}" if gui_version else None,
+            f"opencv-contrib-python {gui_contrib}" if gui_contrib else None,
+            f"opencv-contrib-python-headless {headless_contrib}" if headless_contrib else None,
+        ]
+        conflicts = [name for name in conflicts if name]
+
+        if conflicts:
+            raise RuntimeError(
+                "Conflicting OpenCV distributions detected: "
+                + ", ".join(conflicts)
+                + ".\n\n"
+                "ThighUSSegmentation 0.2.9 requires opencv-python-headless, "
+                "but these packages also provide cv2. Automatically installing "
+                "another OpenCV distribution or removing an existing one can "
+                "affect other Slicer extensions.\n\n"
+                "Please check which extensions use OpenCV before changing it. "
+                "Resolve the conflict in a separate Slicer test installation "
+                "or with the other extension maintainers, then restart Slicer."
             )
 
+        if headless_version:
+            self.log(f"OpenCV headless already installed: {headless_version}")
+
     def install_dependencies_if_needed(self):
-        """
-        Ensure that a compatible version of thigh-us-segmentation
-        is installed in Slicer's Python environment.
-
-        If the package is not installed, it is installed automatically.
-        If an older incompatible version is installed, it is upgraded.
-        """
-
+        """Check and install only what is required; never upgrade Slicer's pip."""
         self.log("")
         self.log("=== Checking dependencies ===")
         self.log(f"Slicer Python executable: {sys.executable}")
         self.log(f"Slicer Python version: {sys.version}")
 
-        # Check Python version
         if sys.version_info < (3, 10):
             raise RuntimeError(
                 "ThighUSSegmentation requires Python >= 3.10.\n"
                 f"This Slicer Python is: {sys.version}"
             )
 
-        # Check whether thigh-us-segmentation is already installed
-        packageInstalled = self.package_distribution_installed()
+        # Do not silently replace the shared PyTorch/Qt/OpenCV stack.
+        self.ensure_compatible_torch()
+        self.check_opencv_distribution_conflict()
 
-        if packageInstalled:
-            version = self.get_package_version()
-
-            if self.package_version_is_compatible():
-                self.log(
-                    f"{self.PACKAGE_DISTRIBUTION_NAME} is already installed. "
-                    f"Version: {version}"
-                )
-                self.log(
-                    f"Version requirement satisfied: "
-                    f">= {self.PACKAGE_MIN_VERSION}"
-                )
-
-                self.add_slicer_python_scripts_to_path()
-                return
-
+        existing_version = self.get_package_version()
+        if self.package_version_is_compatible():
             self.log(
-                f"{self.PACKAGE_DISTRIBUTION_NAME} version {version} "
-                f"is installed, but version >= "
-                f"{self.PACKAGE_MIN_VERSION} is required."
+                f"{self.PACKAGE_DISTRIBUTION_NAME} {existing_version} "
+                "already satisfies the minimum requirement."
             )
-            self.log("Upgrading package and dependencies...")
+            self.add_slicer_python_scripts_to_path()
+            return
 
+        if existing_version is None:
+            description = "install"
+            version_info = "not currently installed"
         else:
-            self.log(
-                f"{self.PACKAGE_DISTRIBUTION_NAME} is not installed."
-            )
-            self.log(
-                "Installing package and dependencies inside Slicer Python..."
-            )
+            description = "upgrade"
+            version_info = f"currently installed: {existing_version}"
 
-        self.log("This can take several minutes on first use.")
+        accepted = slicer.util.confirmOkCancelDisplay(
+            f"Thigh US Segmentation needs to {description} the Python package "
+            f"{self.PACKAGE_SPEC} ({version_info}).\n\n"
+            "Additional dependencies such as nnU-Net may be downloaded. "
+            "This could take several minutes and require significant disk space.\n\n"
+            "Existing compatible PyTorch and nnU-Net installations will be reused "
+            "where possible. Do you want to continue?",
+            windowTitle="Install Thigh US Segmentation dependencies",
+        )
+        if not accepted:
+            raise DependencySetupCancelled("Dependency installation cancelled.")
 
-        # Upgrade pip
-        self.run_process_and_log([
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--upgrade",
-            "pip",
-        ])
-
-        # Install or upgrade thigh-us-segmentation
-        self.run_process_and_log([
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            self.PACKAGE_SPEC,
-        ])
-
+        # slicer.util.pip_install is the supported API in Slicer 5.10.
+        # pip is NOT upgraded; no separate pip-install subprocess is launched.
+        self.log(f"Installing {self.PACKAGE_SPEC} with slicer.util.pip_install...")
+        slicer.util.pip_install(self.PACKAGE_SPEC)
         importlib.invalidate_caches()
 
-        # Make pip-installed command-line tools available
-        self.add_slicer_python_scripts_to_path()
-
-        # Validate that the package is installed
-        if not self.package_distribution_installed():
-            raise RuntimeError(
-                "thigh-us-segmentation could not be found after "
-                "installation.\n"
-                "Restart Slicer and try again."
-            )
-
-        version = self.get_package_version()
-
-        # Validate the installed version
+        installed_version = self.get_package_version()
         if not self.package_version_is_compatible():
             raise RuntimeError(
-                "A compatible version of thigh-us-segmentation could not be "
-                "installed.\n"
-                f"Installed version: {version}\n"
+                "A compatible version of thigh-us-segmentation could not be installed.\n"
+                f"Installed version: {installed_version}\n"
                 f"Required version: >= {self.PACKAGE_MIN_VERSION}"
             )
 
-        self.log(
-            f"Dependencies installed successfully. Version: {version}"
+        self.add_slicer_python_scripts_to_path()
+        self.log(f"Installed ThighUSSegmentation library {installed_version}.")
+
+    def confirm_model_download_if_needed(self):
+        """Ask before the library's first-use Zenodo model download."""
+        model_root = Path(
+            os.environ.get(
+                "THIGH_US_MODELS",
+                str(Path.home() / ".thigh_us_segmentation" / "models"),
+            )
+        ).expanduser()
+        model_exists = False
+        if model_root.is_dir():
+            for candidate in model_root.glob("Dataset*/nnUNetTrainer*"):
+                required = [candidate / "dataset.json", candidate / "plans.json"]
+                required.extend(
+                    candidate / f"fold_{fold}" / "checkpoint_best.pth"
+                    for fold in range(5)
+                )
+                if all(path.is_file() for path in required):
+                    model_exists = True
+                    break
+
+        if model_exists:
+            self.log(f"Model weights found at {model_root}. No download required.")
+            return
+
+        accepted = slicer.util.confirmOkCancelDisplay(
+            "The pretrained thigh ultrasound nnU-Net model was not found.\n\n"
+            f"Models directory: {model_root}\n\n"
+            "The model archive will be downloaded from Zenodo and extracted. "
+            "This can be a large download and may require several gigabytes "
+            "of disk space. Continue?",
+            windowTitle="Download thigh ultrasound model",
         )
+        if not accepted:
+            raise DependencySetupCancelled("Model download cancelled.")
+        self.log("Model download authorized by user.")
 
     def sort_markups_loading_order(self, mrkPaths):
         """
@@ -681,6 +734,7 @@ class ThighUSSegmentationLogic(ScriptedLoadableModuleLogic):
         loadTable=True,
     ):
         self.install_dependencies_if_needed()
+        self.confirm_model_download_if_needed()
 
         self.log("")
         self.log("=== Importing ThighUSSegmentation library ===")
