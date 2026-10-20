@@ -6,7 +6,7 @@ project(ThighUSSegmentation)
 # Extension meta-information
 
 set(EXTENSION_HOMEPAGE
-  "https://github.com/UPNa-Biomedical-Engineering-Group/ThighUSSegmentation"
+  "https://github.com/UPNa-Biomedical-Engineering-Group/SlicerThighUSSegmentation"
 )
 
 set(EXTENSION_CONTRIBUTORS
@@ -18,11 +18,11 @@ set(EXTENSION_DESCRIPTION
 )
 
 set(EXTENSION_ICONURL
-  "https://raw.githubusercontent.com/UPNa-Biomedical-Engineering-Group/ThighUSSegmentation/main/ThighUSSegmentation.png"
+  "https://raw.githubusercontent.com/UPNa-Biomedical-Engineering-Group/SlicerThighUSSegmentation/main/ThighUSSegmentation.png"
 )
 
 set(EXTENSION_SCREENSHOTURLS
-  "https://raw.githubusercontent.com/UPNa-Biomedical-Engineering-Group/ThighUSSegmentation/main/Screenshots/ThighUSSegmentation.png"
+  "https://raw.githubusercontent.com/UPNa-Biomedical-Engineering-Group/SlicerThighUSSegmentation/main/Screenshots/ThighUSSegmentation.png"
 )
 
 # No other Slicer extensions are required.

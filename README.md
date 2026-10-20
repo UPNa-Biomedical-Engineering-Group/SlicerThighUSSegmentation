@@ -23,8 +23,8 @@ The extension provides:
 - Generation of a central measurement line.
 - Automatic loading of results into 3D Slicer.
 - Export of quantitative results to CSV.
-- Automatic installation of the required Python package on first use.
-- Automatic download of the trained nnU-Net model from Zenodo when the model is not already available locally.
+- Installation of the required Python package with user confirmation when needed.
+- Download of the trained nnU-Net model from Zenodo with user confirmation when it is not available locally.
 
 ---
 
@@ -87,10 +87,12 @@ The extension has been tested with:
 
 - **3D Slicer 5.10.0**
 - **Python >= 3.10**
-- **thigh-us-segmentation >= 0.2.7**
-- **nnU-Net v2 2.6.4**
+- **thigh-us-segmentation >= 0.2.9**
+- **nnU-Net v2 >= 2.6** (tested with 2.6.4)
+- **PyTorch >= 2.1.2, excluding 2.9.x** (tested with 2.8.0)
+- **opencv-python-headless >= 4.8, < 5.0**
 
-Additional Python dependencies, including OpenCV and nnU-Net, are installed through the `thigh-us-segmentation` Python package.
+The extension checks for compatible existing dependencies and reuses them whenever possible. The `thigh-us-segmentation` package installs additional missing Python dependencies through Slicer’s `slicer.util.pip_install()` API, with user confirmation. Existing PyTorch installations are not automatically replaced; when PyTorch is missing, the extension delegates installation to Slicer PyTorchUtils. The extension does not upgrade Slicer’s `pip`.
 
 ---
 
@@ -120,7 +122,7 @@ To load the extension manually:
 4. Add the following directory to **Additional module paths**:
 
 ```text
-ThighUSSegmentation/ThighUSSegmentation
+SlicerThighUSSegmentation/ThighUSSegmentation
 ```
 
 5. Restart 3D Slicer.
@@ -132,13 +134,11 @@ ThighUSSegmentation/ThighUSSegmentation
 
 The extension uses the `thigh-us-segmentation` Python package to perform preprocessing, inference, and quantitative analysis.
 
-If the package is not available in the Python environment used by 3D Slicer, the extension installs it and its required dependencies using `pip`.
+When the package is missing or older than the required version, the extension asks for confirmation before installing or upgrading it through `slicer.util.pip_install()`. Compatible installed versions of PyTorch and nnU-Net are reused where possible. If a conflicting OpenCV distribution is detected, the extension reports the conflict rather than uninstalling a shared package automatically.
 
-The trained nnU-Net model is distributed separately through Zenodo. If the model is not already available locally, it is downloaded automatically when the pipeline is executed for the first time.
+The trained nnU-Net model is distributed separately through [Zenodo](https://doi.org/10.5281/zenodo.19914473). If the model weights are not available locally, the extension asks for confirmation before downloading and extracting them. Model files are stored by default under `~/.thigh_us_segmentation/models` (or in the directory specified by `THIGH_US_MODELS`).
 
-Therefore, an **internet connection is required during the first execution** if the required Python dependencies and/or model weights are not already installed.
-
-The first execution may take several minutes while the required components are installed and downloaded.
+An **internet connection is required** when dependencies or model weights need to be downloaded. Initial installation and model download may take several minutes and require significant disk space. Users can decline these downloads.
 
 ---
 
@@ -278,7 +278,7 @@ The trained model weights are hosted on Zenodo:
 
 DOI: https://doi.org/10.5281/zenodo.19914473
 
-The model is automatically downloaded when required by the pipeline.
+When the model is not available locally, the extension asks for confirmation before downloading it.
 
 ---
 
