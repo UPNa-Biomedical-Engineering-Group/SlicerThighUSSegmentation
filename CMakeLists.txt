@@ -15,9 +15,9 @@ set(EXTENSION_ICONURL "https://raw.githubusercontent.com/UPNa-Biomedical-Enginee
 
 set(EXTENSION_SCREENSHOTURLS "https://raw.githubusercontent.com/UPNa-Biomedical-Engineering-Group/SlicerThighUSSegmentation/main/Screenshots/ThighUSSegmentation.png")
 
-# No other Slicer extensions are required.
-# Python dependencies are handled by the extension at runtime.
-set(EXTENSION_DEPENDS "NA")
+# PyTorch extension is required for PyTorchUtils.
+# Other Python dependencies are handled by the extension at runtime.
+set(EXTENSION_DEPENDS "PyTorch")
 
 #-----------------------------------------------------------------------------
 # Slicer
